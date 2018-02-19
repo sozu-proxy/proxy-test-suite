@@ -16,5 +16,6 @@ use check::*;
 
 fn main() {
   run_success().join().unwrap();
-  run_failure().join().unwrap();
+  run_request_failure().join().unwrap();
+  run_response_failure().join().unwrap();
 }
