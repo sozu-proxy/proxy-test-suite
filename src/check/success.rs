@@ -2,12 +2,7 @@ use data::*;
 use httparse;
 use std::collections::HashSet;
 
-pub trait Check {
-  fn generate_request(&self) -> Vec<u8>;
-  fn check_request(&self, req: &httparse::Request) -> Result<(), String>;
-  fn generate_response(&self) -> Vec<u8>;
-  fn check_response(&self, res: &httparse::Response) -> Result<(), String>;
-}
+use super::Check;
 
 pub struct Check1 {
   pub req: Req1,
@@ -38,6 +33,14 @@ impl Check1 {
 impl Check for Check1 {
   fn generate_request(&self) -> Vec<u8> {
     self.req.serialize()
+  }
+
+  fn expects_request_success(&self) -> bool {
+    true
+  }
+
+  fn expects_response_success(&self) -> bool {
+    true
   }
 
   fn check_request(&self, req: &httparse::Request) -> Result<(), String> {
