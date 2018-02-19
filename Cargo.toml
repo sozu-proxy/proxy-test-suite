@@ -1,0 +1,9 @@
+[package]
+name = "proxy-test-suite"
+version = "0.1.0"
+authors = ["Geoffroy Couprie <geo.couprie@gmail.com>"]
+
+[dependencies]
+may = "*"
+httparse = "*"
+nom = "*"
