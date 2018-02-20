@@ -5,8 +5,8 @@ use std::sync::{Arc,Mutex};
 use std::io::{Read, Write, ErrorKind,BufReader};
 use nom::HexDisplay;
 use std::time::Duration;
-use tokio_core::net::{TcpListener,TcpStream};
-use tokio_core::reactor::Core;
+use tokio_core::net::{TcpListener,TcpStream,Incoming};
+use tokio_core::reactor::{Core,Handle};
 use futures::{Future,Stream};
 use tokio_io::io;
 use std::net::SocketAddr;
@@ -31,10 +31,9 @@ pub enum CheckType {
 }
 
 pub use self::success::Check1;
-/*pub use self::success::Check1;
 pub use self::request_failure::Check2;
 pub use self::response_failure::Check3;
-*/
+
 
 pub struct Runner {
   checks: HashMap<usize, Arc<Mutex<Check>>>,
@@ -42,6 +41,28 @@ pub struct Runner {
 
 pub fn create() -> Arc<Mutex<Check>> {
   Arc::new(Mutex::new(Check1::new()))
+}
+
+pub fn run_all_checks() {
+  let c1 = Arc::new(Mutex::new(Check1::new()));
+  let c2 = Arc::new(Mutex::new(Check2::new()));
+  let c3 = Arc::new(Mutex::new(Check3::new()));
+
+  let mut core = Core::new().unwrap();
+  let h0 = core.handle();
+  let h1 = core.handle();
+  let h2 = core.handle();
+  let h3 = core.handle();
+
+  println!("launching listener");
+  let listener_addr = "127.0.0.1:1026".parse().unwrap();
+  let listener = TcpListener::bind(&listener_addr, &h0).unwrap();
+
+  core.run(run_success(listener.incoming(), h1, c1).and_then(|listener| {
+    run_request_failure(listener, h2, c2)
+  }).and_then(|listener| {
+    run_response_failure(listener, h3, c3)
+  })).unwrap();
 }
 
 impl Runner {
@@ -123,26 +144,21 @@ impl AsRef<[u8]> for Buffer {
 
 use futures::future::{Loop,loop_fn};
 
+/*
 pub fn r1() {
   run_success(Arc::new(Mutex::new(self::success::Check1::new())));
 }
+*/
 
-pub fn run_success(c1: Arc<Mutex<Check>>) {
+pub fn run_success(listener: Incoming, handle: Handle, c1: Arc<Mutex<Check>>) -> impl Future<Item = Incoming, Error = ()> {
   let c2 = c1.clone();
   let c3 = c1.clone();
 
-  let mut core = Core::new().unwrap();
-  let handle = core.handle();
-
-  println!("launching listener");
-  let listener_addr = "127.0.0.1:1026".parse().unwrap();
-  let listener = TcpListener::bind(&listener_addr, &handle).unwrap();
-
-  let server = listener.incoming().into_future().and_then(|(opt_stream, listener)| {
+  let server = listener.into_future().and_then(move |(opt_stream, listener)| {
     let (tcp, addr) = opt_stream.expect("could not accept listener");
     let buf = Buffer::new(16384);
 
-    loop_fn((tcp, buf), |(tcp, buf)| {
+    loop_fn((tcp, buf, c1), |(tcp, buf, c1)| {
       io::read(tcp, buf).and_then(|(tcp, mut buf, sz)| {
         {
           buf.advance(sz);
@@ -159,9 +175,9 @@ pub fn run_success(c1: Arc<Mutex<Check>>) {
             return Ok(Loop::Break(tcp));
           }
         }
-        Ok(Loop::Continue((tcp, buf)))
+        Ok(Loop::Continue((tcp, buf, c1)))
       })
-    }).and_then(|stream| {
+    }).and_then(move |stream| {
       let buffer: Vec<u8> = {
         let mut checker = c2.lock().unwrap();
         checker.generate_response()
@@ -179,15 +195,15 @@ pub fn run_success(c1: Arc<Mutex<Check>>) {
     let mut checker = c3.lock().unwrap();
     checker.generate_request()
   };
-  let client = TcpStream::connect(&addr, &handle).and_then(|tcp| {
+  let client = TcpStream::connect(&addr, &handle).and_then(move |tcp| {
 
     tcp.set_keepalive(Some(Duration::from_millis(1)));
 
-    io::write_all(tcp, &buffer)
-  }).and_then(|(tcp, _)| {
+    io::write_all(tcp, buffer)
+  }).and_then(move |(tcp, _)| {
     let buf = Buffer::new(16384);
 
-    loop_fn((tcp, buf), |(tcp, buf)| {
+    loop_fn((tcp, buf, c3), |(tcp, buf, c3)| {
       io::read(tcp, buf).and_then(|(tcp, mut buf, sz)| {
         {
           buf.advance(sz);
@@ -204,35 +220,41 @@ pub fn run_success(c1: Arc<Mutex<Check>>) {
             return Ok(Loop::Break(tcp));
           }
         }
-        Ok(Loop::Continue((tcp, buf)))
+        Ok(Loop::Continue((tcp, buf, c3)))
       })
     })
   });
 
-  core.run(server.or_else(|(_, listener)| Ok(listener)).join(client).map(|(listener, _)| listener)).unwrap();
+  server
+    .or_else(|(_, listener)| Ok(listener))
+    .join(client.map_err(|e| {
+      println!("got error: {:?}", e);
+      ()
+    }))
+    .map(|(listener, _)| listener)
 }
 
 
+/*
 pub fn r2() {
   run_request_failure(Arc::new(Mutex::new(self::request_failure::Check2::new())));
 }
+*/
 
-pub fn run_request_failure(c1: Arc<Mutex<Check>>) {
+pub fn run_request_failure(listener: Incoming, handle: Handle, c1: Arc<Mutex<Check>>) -> impl Future<Item = Incoming, Error = ()> {
 
   println!("launching client");
-  let mut core = Core::new().unwrap();
-  let handle = core.handle();
 
   let addr = "127.0.0.1:8080".parse::<SocketAddr>().unwrap();
   let buffer = {
     let mut checker = c1.lock().unwrap();
     checker.generate_request()
   };
-  core.run(TcpStream::connect(&addr, &handle).and_then(|tcp| {
+  TcpStream::connect(&addr, &handle).and_then(|tcp| {
 
     tcp.set_keepalive(Some(Duration::from_millis(1)));
     println!("sending:\n{}", &buffer.to_hex(16));
-    io::write_all(tcp, &buffer).and_then(|(tcp,res)| {
+    io::write_all(tcp, buffer).and_then(|(tcp,res)| {
       println!("res: {:?}", res);
       io::flush(tcp)
     }).and_then(|tcp| {
@@ -256,29 +278,33 @@ pub fn run_request_failure(c1: Arc<Mutex<Check>>) {
           }
         })
     }).then(|_| Ok(()))
-  })).unwrap();
+  }).then(|_| Ok(listener))
 }
 
+/*
 pub fn r3() {
   run_response_failure(Arc::new(Mutex::new(self::response_failure::Check3::new())));
 }
+*/
+pub fn run_response_failure(listener: Incoming, handle: Handle, c1: Arc<Mutex<Check>>) -> impl Future<Item = Incoming, Error = ()> {
 
-pub fn run_response_failure(c1: Arc<Mutex<Check>>) {
   let c2 = c1.clone();
   let c3 = c1.clone();
 
+  /*
   let mut core = Core::new().unwrap();
   let handle = core.handle();
 
   println!("launching listener");
   let listener_addr = "127.0.0.1:1026".parse().unwrap();
   let listener = TcpListener::bind(&listener_addr, &handle).unwrap();
+  */
 
-  let server = listener.incoming().into_future().and_then(|(opt_stream, listener)| {
+  let server = listener.into_future().and_then(|(opt_stream, listener)| {
     let (tcp, addr) = opt_stream.expect("could not accept listener");
     let buf = Buffer::new(16384);
 
-    loop_fn((tcp, buf), |(tcp, buf)| {
+    loop_fn((tcp, buf, c1), |(tcp, buf, c1)| {
       io::read(tcp, buf).and_then(|(tcp, mut buf, sz)| {
         {
           buf.advance(sz);
@@ -295,9 +321,9 @@ pub fn run_response_failure(c1: Arc<Mutex<Check>>) {
             return Ok(Loop::Break(tcp));
           }
         }
-        Ok(Loop::Continue((tcp, buf)))
+        Ok(Loop::Continue((tcp, buf, c1)))
       })
-    }).and_then(|stream| {
+    }).and_then(move |stream| {
       let buffer: Vec<u8> = {
         let mut checker = c2.lock().unwrap();
         checker.generate_response()
@@ -338,7 +364,7 @@ pub fn run_response_failure(c1: Arc<Mutex<Check>>) {
 
     tcp.set_keepalive(Some(Duration::from_millis(1)));
 
-    io::write_all(tcp, &buffer)
+    io::write_all(tcp, buffer)
   }).and_then(|(tcp, _)| {
       let buf = vec![42; 10];
       io::read_to_end(tcp, buf).then(|r| {
@@ -360,5 +386,12 @@ pub fn run_response_failure(c1: Arc<Mutex<Check>>) {
       })
   });
 
-  core.run(server.or_else(|(_, listener)| Ok(listener)).join(client).map(|(listener, _)| listener)).unwrap();
+  server
+    .or_else(|(_, listener)| Ok(listener))
+    .join(client.map_err(|e| {
+      println!("got error: {:?}", e);
+      ()
+    }))
+    .map(|(listener, _)| listener)
+  //core.run(server.or_else(|(_, listener)| Ok(listener)).join(client).map(|(listener, _)| listener)).unwrap();
 }
