@@ -12,5 +12,8 @@ mod check;
 use check::*;
 
 fn main() {
-  run_all_checks()
+  //run_all_checks()
+  let mut r = Runner::new();
+
+  r.run();
 }

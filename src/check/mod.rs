@@ -8,6 +8,8 @@ use std::time::Duration;
 use tokio_core::net::{TcpListener,TcpStream,Incoming};
 use tokio_core::reactor::{Core,Handle};
 use futures::{Future,Stream};
+use futures::stream;
+use futures::IntoFuture;
 use tokio_io::io;
 use std::net::SocketAddr;
 
@@ -65,6 +67,23 @@ pub fn run_all_checks() {
   })).unwrap();
 }
 
+pub fn run_check(listener: Incoming, handle: Handle, c1: Arc<Mutex<Check>>) -> impl Future<Item = Incoming, Error = ()> {
+  let (req_success, res_success) = {
+    let c = c1.lock().unwrap();
+    (c.expects_request_success(), c.expects_response_success())
+  };
+
+  if req_success && res_success {
+    Box::new(run_success(listener, handle, c1)) as Box<Future<Item = Incoming, Error = ()>>
+  } else if !req_success {
+    Box::new(run_request_failure(listener, handle, c1)) as Box<Future<Item = Incoming, Error = ()>>
+  } else if req_success && ! res_success {
+    Box::new(run_response_failure(listener, handle, c1)) as Box<Future<Item = Incoming, Error = ()>>
+  } else {
+    panic!()
+  }
+}
+
 impl Runner {
   pub fn new() -> Runner {
     let mut checks = HashMap::new();
@@ -77,6 +96,32 @@ impl Runner {
     }
   }
 
+  pub fn run(&self) {
+    let mut core = Core::new().unwrap();
+    let handle = core.handle();
+    let h1 = core.handle();
+    let h2 = core.handle();
+    let h3 = core.handle();
+
+    let it = self.checks.values();
+
+    println!("launching listener");
+    let listener_addr = "127.0.0.1:1026".parse().unwrap();
+    let listener = TcpListener::bind(&listener_addr, &handle.clone()).unwrap();
+
+
+    let f = stream::iter_ok(it).fold((listener.incoming(), handle),
+      |(listener, handle):(Incoming, Handle) , check: &Arc<Mutex<Check>>| {
+      //|(listener, handle) , check| {
+      let h: Handle = handle.clone();
+      run_check(listener, h, check.clone()).map(|listener| (listener, handle))
+    }).map_err(|e: ()| {
+      println!("got error: {:?}",e);
+      ()
+    });
+
+    let a: (Incoming, Handle) = core.run(f).unwrap();
+  }
   /*
   pub fn create_check(&self, check_type: CheckType, id: usize) -> Arc<Mutex<Check>> {
     match (check_type, id) {
