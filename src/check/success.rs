@@ -1,6 +1,7 @@
 use data::*;
 use httparse;
 use std::collections::HashSet;
+use std::sync::{Arc,Mutex};
 
 use super::Check;
 
@@ -27,6 +28,10 @@ impl Check1 {
         body: Vec::new(),
       }
     }
+  }
+
+  pub fn create() -> Arc<Mutex<Check>> {
+    Arc::new(Mutex::new(Self::new()))
   }
 }
 

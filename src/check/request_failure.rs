@@ -1,10 +1,19 @@
-use data::*;
 use httparse;
-use std::collections::HashSet;
+use std::sync::{Arc,Mutex};
 
 use super::Check;
 
 pub struct Check2 {
+}
+
+impl Check2 {
+  pub fn new() -> Check2 {
+    Check2 {}
+  }
+
+  pub fn create() -> Arc<Mutex<Check>> {
+    Arc::new(Mutex::new(Self::new()))
+  }
 }
 
 impl Check for Check2 {
